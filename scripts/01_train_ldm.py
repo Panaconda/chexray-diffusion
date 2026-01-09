@@ -22,6 +22,7 @@ from torchvision.transforms import Compose, ToTensor, Resize, Normalize
 
 from cheff.ldm import instantiate_from_config
 from cheff.machex import MaCheXDataset, MimicT2IDataset
+from cheff.peft_modules.inject_lora import apply_lora_peft, export_lora_weights
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -492,8 +493,29 @@ if __name__ == "__main__":
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 
+        ### START: LoRA PEFT SECTION 1 ###
+
+        lora_config_dict = config.model.params.pop("lora_config", None)
+        
+        if config.model.params.cond_stage_trainable == True:
+            print("Warning: cond_stage_trainable is set to True. Thus, BERT encoder will be included in training.")
+
+        ### END: LoRA PEFT SECTION 1 ###
+
         # model
         model = instantiate_from_config(config.model)
+
+        ### START: LoRA PEFT SECTION 2 ###
+
+        if lora_config_dict and lora_config_dict.enabled:
+            print(f"Applying LoRA PEFT | Scope: {lora_config_dict.adaptation_scope} | Rank: {lora_config_dict.rank}")
+            
+            model = apply_lora_peft(model, lora_config_dict)
+
+        else:
+            print("LoRA is disabled in the YAML config. Proceeding with full weights.")
+
+        ### END: LoRA PEFT SECTION 2 ###
 
         # trainer and callbacks
         trainer_kwargs = dict()
@@ -570,9 +592,17 @@ if __name__ == "__main__":
             "cuda_callback": {
                 "target": "scripts.01_train_ldm.CUDACallback"
             },
-
-            'checkpoint_callback': modelckpt_cfg,
         }
+
+        ### START: LoRA SECTION 4 ###
+
+        if lora_config_dict and lora_config_dict.enabled:
+            rank_zero_info("LoRA mode detected: Skipping heavy checkpointing of full model.")
+
+        else:
+            default_callbacks_cfg['checkpoint_callback'] = modelckpt_cfg
+
+        ### END: LoRA SECTION 4 ###
 
         if "callbacks" in lightning_config:
             callbacks_cfg = lightning_config.callbacks
@@ -644,6 +674,14 @@ if __name__ == "__main__":
         if opt.train:
             try:
                 trainer.fit(model, datamodule=data)
+
+                ### START: LoRA SECTION 3 ###
+                if lora_config_dict and lora_config_dict.enabled:
+                    if trainer.global_rank == 0: # Only save on main GPU
+                        print("Exporting final LoRA adapters...")
+                        export_lora_weights(model, logdir)
+                ### END: LoRA SECTION 3 ###
+
             except Exception:
                 melk()
                 raise
