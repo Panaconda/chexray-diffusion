@@ -35,6 +35,7 @@ def apply_lora_peft(model, lora_config_dict):
     print("--- PEFT Status ---")
     model.model.diffusion_model.print_trainable_parameters()
 
+    return model
 
 def export_lora_weights(model, logdir):
 
